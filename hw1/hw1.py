@@ -42,6 +42,8 @@ def reader(path) ->tuple[list[list[float]],list[float]]:
 A,B = reader(pathlib.Path("system.txt"))
 
 def determinant(matrix: list[list[float]]) -> float:
+    if len(matrix) == 2:
+        return matrix[0][0]*matrix[1][1] - matrix[0][1]*matrix[1][0]
     a,b,c = matrix[0]
     d,e,f = matrix[1]
     g,h,i = matrix[2]
