@@ -58,10 +58,10 @@ def trace(matrix):
 print(f"{trace(A)=}")
 
 def norm(vector):
-    squareSum = 0.0
+    square_sum = 0.0
     for elem in vector:
-        squareSum += elem**2
-    return math.sqrt(squareSum)
+        square_sum += elem**2
+    return math.sqrt(square_sum)
 
 print(f"{norm(B)=}")
 
@@ -164,16 +164,14 @@ def adjoint(matrix: list[list[float]]) -> list[list[float]]:
 
 
 def solve(matrix: list[list[float]], vector: list[float]) -> list[float]:
-    det_A = determinant(matrix)
-    if det_A == 0:
+    det_a = determinant(matrix)
+    if det_a == 0:
         raise ValueError("Matrix is singular, cannot solve")
 
-    solution = []
-    for i in range(3):
-        temp = [row[:] for row in matrix]
-        for j in range(3):
-            temp[j][i] = vector[j]
-        solution.append(determinant(temp) / det_A)
-    return solution
+    adj = adjoint(matrix)
+    inv = [[adj[i][j] / det_a for j in range(3)] for i in range(3)]
+
+    result = multiply(inv, vector)
+    return result
 
 print(f"{solve(A,B)=}")
