@@ -5,73 +5,67 @@ import numpy as np
 import os
 import time
 
-# Import your classes. 
-# NOTE: Ensure your test.py has the training loop inside `if __name__ == "__main__":`
-# otherwise importing it will start training again!
+# Import your classes
 from test import Agent, FlappyBirdWrapper
 
 def watch_agent():
     print("Initializing Environment...")
-    # 1. Use "rgb_array" so the Agent gets the pixel data it needs
     env = gym.make("FlappyBird-v0", render_mode="rgb_array", use_lidar=False)
     env = FlappyBirdWrapper(env)
     
     agent = Agent(env)
     
-    # 2. Load the trained model
-    if os.path.exists("flappy_checkpoint.pth"):
-        agent.load("flappy_checkpoint.pth")
+    # Load Model
+    if os.path.exists("flappy_checkpoint_461.pth"):
+        agent.load("flappy_checkpoint_461.pth")
         print("Model loaded successfully.")
     else:
         print("Error: No checkpoint found! Train the agent first.")
         return
 
-    # 3. Turn off Randomness (Pure Skill)
+    # Turn off Randomness
     agent.epsilon = 0.0
     print(f"Agent Ready! Epsilon: {agent.epsilon}")
     
-    # 4. Run the game loop
-    episodes = 10
+    episodes = 20
     for ep in range(episodes):
         state, _ = env.reset()
+        current_score = 0 
         total_reward = 0
-        steps = 0
-        
+
         print(f"Starting Episode {ep+1}...")
         
         while True:
-            # Select best action
             action = agent.select_action(state)
             
-            # Step the environment
-            next_state, reward, terminated, truncated, _ = env.step(action)
+            next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             
-            # === VISUALIZATION ===
-            # We want to see what the agent sees.
-            # 'next_state' is a stack of 4 frames (4, 84, 84)
-            # We grab the last frame (most current) to show on screen
-            latest_frame = next_state[-1] 
+            current_score = info.get('score', 0)
+            total_reward += reward
+
+            human_view = env.render() 
             
-            # Resize it from 84x84 to 400x400 so we can see it clearly
-            big_frame = cv2.resize(latest_frame, (400, 400), interpolation=cv2.INTER_NEAREST)
+            if human_view is not None:
+                human_view = cv2.cvtColor(human_view, cv2.COLOR_RGB2BGR)
+                
+                text = f"Score: {current_score}"
+                cv2.putText(human_view, text, (10, 30), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+                cv2.imshow("Flappy Bird (Agent)", human_view)
             
-            # Show the window
-            cv2.imshow("Agent Vision (What the AI Sees)", big_frame)
-            
-            # Wait 30ms to simulate 30 FPS (otherwise it runs too fast)
             if cv2.waitKey(30) == ord('q'): 
                 print("Quitting...")
                 env.close()
+                cv2.destroyAllWindows()
                 return
 
             state = next_state
-            total_reward += reward
-            steps += 1
             
             if done:
-                print(f"Episode {ep+1} Finished. Score: {total_reward} (Steps: {steps})")
-                time.sleep(1) # Pause briefly between deaths
+                print(f"Episode {ep+1} Finished. Final Score: {current_score}. Reward: {total_reward}")
+                time.sleep(1) 
                 break
                 
     env.close()

@@ -16,16 +16,16 @@ from collections import deque
 import matplotlib.pyplot as plt
 
 # ==========================================
-# 1. PREPROCESSING WRAPPERS (CORRECTED)
+# 1. PREPROCESSING WRAPPERS
 # ==========================================
 class FlappyBirdWrapper(gym.Wrapper):
     def __init__(self, env):
         super(FlappyBirdWrapper, self).__init__(env)
         self.width = 84
         self.height = 84
-        self.frame_stack_len = 4
+        self.frame_stack_len = 4    
         self.frames = deque(maxlen=self.frame_stack_len)
-        self.skip = 2  # <--- NEW: Number of frames to skip
+        self.skip = 2 
         self.alignment_scale = 0.05
         
         self.observation_space = gym.spaces.Box(
@@ -37,29 +37,12 @@ class FlappyBirdWrapper(gym.Wrapper):
     def step(self, action):
         total_reward = 0
         
-        # Frame skipping loop
         for _ in range(self.skip):
             _, reward, terminated, truncated, info = self.env.step(action)
             
-
-            bird_y = info.get("player_y")
-            pipe_top = info.get("next_pipe_top_y")
-            pipe_bottom = info.get("next_pipe_bottom_y")
-
-            if bird_y is not None and pipe_top is not None and pipe_bottom is not None:
-                gap_center = (pipe_top + pipe_bottom) / 2
-                dist = abs(bird_y - gap_center)
-
-                # Smooth, bounded reward
-                alignment_reward = np.exp(-dist / 30)
-                total_reward += (self.alignment_scale / self.skip) * alignment_reward
-            # === THE FIX: BOOST PIPE REWARD ===
-            # The standard reward for a pipe is 1.0. 
-            # If we see a big reward, we boost it to 5.0 to make it the PRIORITY.
             if reward == 1:
                 reward = 5.0
             
-            # OPTIONAL: Penalize hitting the ceiling/ground slightly if you want
             if terminated:
                 reward = -5.0 
                 
@@ -68,17 +51,12 @@ class FlappyBirdWrapper(gym.Wrapper):
             if done:
                 break
         
-        # REMOVED your "total_reward += 0.01" line.
-        # We don't want to reward waiting anymore. We only want to reward SCORING.
-        
-        # Only render and process the LAST frame
         frame = self.env.render()
         processed_frame = self._process_frame(frame)
         self.frames.append(processed_frame)
         
         return self._get_stacked_obs(), total_reward, terminated, truncated, info
 
-    # ... (Keep reset, _process_frame, and _get_stacked_obs exactly the same) ...
     def reset(self, **kwargs):
         _, info = self.env.reset(**kwargs)
         frame = self.env.render()
@@ -177,7 +155,7 @@ class Agent:
         self.epsilon_decay = 0.99997
         self.learning_rate = 1e-4
         self.target_update_freq = 6000
-        self.memory_size = 300000
+        self.memory_size = 400000
         self.start_training_step = 3000 
 
         # Models
@@ -272,17 +250,11 @@ class Agent:
 
     def start(self, num_episodes=60000):
         scores = []
-
-        max_alignment = 0.05
-        min_alignment = 0.01
-        anneal_episodes = 200_000
+        recent_scores = deque(maxlen=100)
 
         for episode in range(num_episodes):
             state, info = self.env.reset()
             total_reward = 0
-
-            progress = min(episode / anneal_episodes, 1.0)
-            self.env.alignment_scale = max_alignment - progress * (max_alignment - min_alignment)
             
             while True:
                 action = self.select_action(state)
@@ -307,11 +279,14 @@ class Agent:
                     break
 
             scores.append(total_reward)
+            recent_scores.append(total_reward)
 
             # Log results
             if episode % 100 == 0:
-                print(f"Episode {episode}, Score: {total_reward}, Epsilon: {self.epsilon:.2f}, Memory: {len(self.memory)}")
-            
+                # Calculate the mean of whatever is in the recent buffer
+                avg_score = np.mean(recent_scores) if recent_scores else 0
+                print(f"Episode {episode}, Avg Score (Last 100): {avg_score:.2f}, Epsilon: {self.epsilon:.2f}, Memory: {len(self.memory)}")
+                
             # Save Checkpoint every 1000 episodes
             if episode % 1000 == 0:
                 self.save()
