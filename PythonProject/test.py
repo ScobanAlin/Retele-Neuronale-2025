@@ -1,0 +1,317 @@
+import os
+import warnings
+# Suppress specific pygame/pkg_resources warnings
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
+warnings.filterwarnings("ignore", category=UserWarning, module="pygame.pkgdata")
+
+import gymnasium as gym
+import flappy_bird_gymnasium
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import cv2
+import random
+from collections import deque
+import matplotlib.pyplot as plt
+
+# ==========================================
+# 1. PREPROCESSING WRAPPERS (CORRECTED)
+# ==========================================
+class FlappyBirdWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super(FlappyBirdWrapper, self).__init__(env)
+        self.width = 84
+        self.height = 84
+        self.frame_stack_len = 4
+        self.frames = deque(maxlen=self.frame_stack_len)
+        self.skip = 4  # <--- NEW: Number of frames to skip
+        
+        self.observation_space = gym.spaces.Box(
+            low=0, high=255,
+            shape=(self.frame_stack_len, self.height, self.width),
+            dtype=np.uint8
+        )
+
+    def step(self, action):
+        total_reward = 0
+        done = False
+        
+        # Frame skipping loop
+        for _ in range(self.skip):
+            _, reward, terminated, truncated, info = self.env.step(action)
+            total_reward += reward
+            done = terminated or truncated
+            if done:
+                break
+        
+        # === ADD THIS LINE ===
+        # Small reward for surviving each frame (0.01 per skip cycle = 0.0025 per actual frame)
+        if not done:
+            total_reward += 0.01
+        # ====================
+        
+        # Only render and process the LAST frame
+        frame = self.env.render()
+        processed_frame = self._process_frame(frame)
+        self.frames.append(processed_frame)
+        
+        return self._get_stacked_obs(), total_reward, done, False, info
+
+    # ... (Keep reset, _process_frame, and _get_stacked_obs exactly the same) ...
+    def reset(self, **kwargs):
+        _, info = self.env.reset(**kwargs)
+        frame = self.env.render()
+        processed_frame = self._process_frame(frame)
+        self.frames.clear()
+        for _ in range(self.frame_stack_len):
+            self.frames.append(processed_frame)
+        return self._get_stacked_obs(), info
+
+    def _process_frame(self, frame):
+        if frame is None:
+            return np.zeros((self.height, self.width), dtype=np.uint8)
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        resized = cv2.resize(gray, (self.width, self.height), interpolation=cv2.INTER_AREA)
+        return resized
+
+    def _get_stacked_obs(self):
+        return np.stack(self.frames, axis=0)
+
+# ==========================================
+# 2. NEURAL NETWORK (CNN)
+# ==========================================
+class DQN(nn.Module):
+    def __init__(self, input_shape, num_actions):
+        super(DQN, self).__init__()
+        
+        # Convolutional Layers for Feature Extraction
+        self.features = nn.Sequential(
+            # Conv2d(in_channels, out_channels, kernel_size, stride)
+            nn.Conv2d(input_shape[0], 32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU()
+        )
+        
+        # Calculate the size of the flattened features
+        self.fc_input_dim = self._get_conv_out(input_shape)
+        
+        # Fully Connected Layers for Decision Making
+        self.fc = nn.Sequential(
+            nn.Linear(self.fc_input_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, num_actions)
+        )
+
+    def _get_conv_out(self, shape):
+        o = self.features(torch.zeros(1, *shape))
+        return int(np.prod(o.size()))
+
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1) # Flatten
+        return self.fc(x)
+
+# ==========================================
+# 3. REPLAY BUFFER
+# ==========================================
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, state, action, reward, next_state, done):
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        state, action, reward, next_state, done = zip(*batch)
+        return state, action, reward, next_state, done
+
+    def __len__(self):
+        return len(self.buffer)
+
+# ==========================================
+# 4. TRAINING AGENT
+# ==========================================
+class Agent:
+    def __init__(self, env):
+        self.env = env
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        print(f"Training on: {self.device} (Model: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
+
+        # Hyperparameters
+        self.batch_size = 64
+        self.gamma = 0.99
+        self.epsilon = 1.0
+        self.epsilon_min = 0.01
+        self.epsilon_decay = 0.9995
+        self.learning_rate = 1e-4
+        self.target_update_freq = 1000
+        self.memory_size = 120000
+        self.start_training_step = 3000 
+
+        # Models
+        input_shape = env.observation_space.shape
+        num_actions = env.action_space.n
+        
+        self.policy_net = DQN(input_shape, num_actions).to(self.device)
+        self.target_net = DQN(input_shape, num_actions).to(self.device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()
+        
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
+        self.memory = ReplayBuffer(self.memory_size)
+        self.steps = 0
+
+    def select_action(self, state):
+        # Epsilon-Greedy Strategy
+        if random.random() < self.epsilon:
+            return self.env.action_space.sample()
+        
+        with torch.no_grad():
+            state_t = torch.tensor(np.array([state]), dtype=torch.float32).to(self.device) / 255.0
+            q_values = self.policy_net(state_t)
+            return q_values.argmax().item()
+
+    def learn(self):
+        if len(self.memory) < self.start_training_step:
+            return None
+
+        # Sample Batch
+        states, actions, rewards, next_states, dones = self.memory.sample(self.batch_size)
+
+        states = torch.tensor(np.array(states), dtype=torch.float32).to(self.device) / 255.0
+        actions = torch.tensor(actions, dtype=torch.long).unsqueeze(1).to(self.device)
+        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1).to(self.device)
+        next_states = torch.tensor(np.array(next_states), dtype=torch.float32).to(self.device) / 255.0
+        dones = torch.tensor(dones, dtype=torch.float32).unsqueeze(1).to(self.device)
+
+        # === DOUBLE DQN LOGIC (The Key Fix) ===
+        with torch.no_grad():
+            # 1. Use Policy Net to SELECT the best action for the next state
+            best_actions = self.policy_net(next_states).argmax(1).unsqueeze(1)
+            
+            # 2. Use Target Net to EVALUATE that specific action
+            # This decoupling prevents the agent from making "optimistic" mistakes
+            next_q_values = self.target_net(next_states).gather(1, best_actions)
+            
+            target_q = rewards + (1 - dones) * self.gamma * next_q_values
+        # ======================================
+
+        current_q = self.policy_net(states).gather(1, actions)
+        
+        # Using Huber Loss (SmoothL1) is good
+        loss = nn.SmoothL1Loss()(current_q, target_q)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        
+        # Optional: Clip gradients to prevent crashes in long runs
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
+        
+        self.optimizer.step()
+
+        return loss.item()
+
+    # --- FIXED SAVE/LOAD TO HANDLE EPSILON AND OPTIMIZER ---
+    def save(self, path="flappy_checkpoint.pth"):
+        checkpoint = {
+            'model_state': self.policy_net.state_dict(),
+            'target_state': self.target_net.state_dict(),
+            'optimizer_state': self.optimizer.state_dict(),
+            'epsilon': self.epsilon,
+            'steps': self.steps
+        }
+        torch.save(checkpoint, path)
+        print(f"Checkpoint saved to {path} (Epsilon: {self.epsilon:.3f})")
+
+    def load(self, path="flappy_checkpoint.pth"):
+        if not os.path.exists(path):
+            print("No checkpoint found. Starting from scratch.")
+            return
+
+        checkpoint = torch.load(path)
+        self.policy_net.load_state_dict(checkpoint['model_state'])
+        self.target_net.load_state_dict(checkpoint['target_state'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state'])
+        
+        self.epsilon = checkpoint.get('epsilon', self.epsilon)
+        
+        self.steps = checkpoint.get('steps', self.steps)
+        print(f"Loaded checkpoint! Resuming with Epsilon: {self.epsilon:.3f}")
+
+    def start(self, num_episodes=30000):
+        scores = []
+        for episode in range(num_episodes):
+            state, info = self.env.reset()
+            total_reward = 0
+            
+            while True:
+                action = self.select_action(state)
+                next_state, reward, terminated, truncated, info = self.env.step(action)
+                done = terminated or truncated
+                
+                self.memory.push(state, action, reward, next_state, done)
+                state = next_state
+                total_reward += reward
+                self.steps += 1
+
+                if self.steps > self.start_training_step and self.steps % 4 == 0:
+                    loss = self.learn()
+
+                if self.steps % self.target_update_freq == 0:
+                    self.target_net.load_state_dict(self.policy_net.state_dict())
+                
+                if done:
+                    break
+            
+            # Epsilon Decay
+            if self.epsilon > self.epsilon_min:
+                self.epsilon *= self.epsilon_decay
+
+            scores.append(total_reward)
+
+            # Log results
+            if episode % 250 == 0:
+                print(f"Episode {episode}, Score: {total_reward}, Epsilon: {self.epsilon:.2f}, Memory: {len(self.memory)}")
+            
+            # Save Checkpoint every 1000 episodes
+            if episode % 1000 == 0:
+                self.save()
+
+        return scores
+
+# ==========================================
+# MAIN EXECUTION
+# ==========================================
+if __name__ == "__main__":
+    # Create the environment with RGB output
+    print("Initializing Environment...")
+    env = gym.make("FlappyBird-v0", render_mode="rgb_array", use_lidar=False)
+    
+    # Apply our custom Pixel wrapper
+    env = FlappyBirdWrapper(env)
+    
+    agent = Agent(env)
+    
+    # Auto-resume logic
+    if os.path.exists("flappy_checkpoint.pth"):
+        agent.load("flappy_checkpoint.pth")
+    else:
+        print("Starting training from scratch...")
+
+    # Start training
+    scores = agent.start()
+    
+    env.close()
+    
+    # Plot results
+    plt.plot(scores)
+    plt.title("Flappy Bird Training Score")
+    plt.xlabel("Episode")
+    plt.ylabel("Score")
+    plt.show()
