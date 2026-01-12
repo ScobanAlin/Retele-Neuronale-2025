@@ -16,7 +16,7 @@ env_human = gym.make("FlappyBird-v0", render_mode="human")
 env_rgb = gym.make("FlappyBird-v0", render_mode="rgb_array")
 
 policy_net = DQN().to(DEVICE)
-policy_net.load_state_dict(torch.load("dqn_flappy_checkpoint_300.pth", map_location=DEVICE))
+policy_net.load_state_dict(torch.load("dqn_flappy.pth", map_location=DEVICE))
 policy_net.eval()
 
 # Reset both
