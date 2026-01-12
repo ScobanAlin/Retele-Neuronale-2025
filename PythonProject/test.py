@@ -25,7 +25,8 @@ class FlappyBirdWrapper(gym.Wrapper):
         self.height = 84
         self.frame_stack_len = 4
         self.frames = deque(maxlen=self.frame_stack_len)
-        self.skip = 4  # <--- NEW: Number of frames to skip
+        self.skip = 2  # <--- NEW: Number of frames to skip
+        self.alignment_scale = 0.05
         
         self.observation_space = gym.spaces.Box(
             low=0, high=255,
@@ -35,28 +36,47 @@ class FlappyBirdWrapper(gym.Wrapper):
 
     def step(self, action):
         total_reward = 0
-        done = False
         
         # Frame skipping loop
         for _ in range(self.skip):
             _, reward, terminated, truncated, info = self.env.step(action)
+            
+
+            bird_y = info.get("player_y")
+            pipe_top = info.get("next_pipe_top_y")
+            pipe_bottom = info.get("next_pipe_bottom_y")
+
+            if bird_y is not None and pipe_top is not None and pipe_bottom is not None:
+                gap_center = (pipe_top + pipe_bottom) / 2
+                dist = abs(bird_y - gap_center)
+
+                # Smooth, bounded reward
+                alignment_reward = np.exp(-dist / 30)
+                total_reward += (self.alignment_scale / self.skip) * alignment_reward
+            # === THE FIX: BOOST PIPE REWARD ===
+            # The standard reward for a pipe is 1.0. 
+            # If we see a big reward, we boost it to 5.0 to make it the PRIORITY.
+            if reward == 1:
+                reward = 5.0
+            
+            # OPTIONAL: Penalize hitting the ceiling/ground slightly if you want
+            if terminated:
+                reward = -5.0 
+                
             total_reward += reward
             done = terminated or truncated
             if done:
                 break
         
-        # === ADD THIS LINE ===
-        # Small reward for surviving each frame (0.01 per skip cycle = 0.0025 per actual frame)
-        if not done:
-            total_reward += 0.01
-        # ====================
+        # REMOVED your "total_reward += 0.01" line.
+        # We don't want to reward waiting anymore. We only want to reward SCORING.
         
         # Only render and process the LAST frame
         frame = self.env.render()
         processed_frame = self._process_frame(frame)
         self.frames.append(processed_frame)
         
-        return self._get_stacked_obs(), total_reward, done, False, info
+        return self._get_stacked_obs(), total_reward, terminated, truncated, info
 
     # ... (Keep reset, _process_frame, and _get_stacked_obs exactly the same) ...
     def reset(self, **kwargs):
@@ -81,27 +101,29 @@ class FlappyBirdWrapper(gym.Wrapper):
 # ==========================================
 # 2. NEURAL NETWORK (CNN)
 # ==========================================
-class DQN(nn.Module):
+class DuelingDQN(nn.Module):
     def __init__(self, input_shape, num_actions):
-        super(DQN, self).__init__()
-        
-        # Convolutional Layers for Feature Extraction
+        super().__init__()
+
         self.features = nn.Sequential(
-            # Conv2d(in_channels, out_channels, kernel_size, stride)
-            nn.Conv2d(input_shape[0], 32, kernel_size=8, stride=4),
+            nn.Conv2d(input_shape[0], 32, 8, 4),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.Conv2d(32, 64, 4, 2),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.Conv2d(64, 64, 3, 1),
             nn.ReLU()
         )
-        
-        # Calculate the size of the flattened features
-        self.fc_input_dim = self._get_conv_out(input_shape)
-        
-        # Fully Connected Layers for Decision Making
-        self.fc = nn.Sequential(
-            nn.Linear(self.fc_input_dim, 512),
+
+        conv_out = self._get_conv_out(input_shape)
+
+        self.value = nn.Sequential(
+            nn.Linear(conv_out, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1)
+        )
+
+        self.advantage = nn.Sequential(
+            nn.Linear(conv_out, 512),
             nn.ReLU(),
             nn.Linear(512, num_actions)
         )
@@ -112,8 +134,12 @@ class DQN(nn.Module):
 
     def forward(self, x):
         x = self.features(x)
-        x = x.view(x.size(0), -1) # Flatten
-        return self.fc(x)
+        x = x.view(x.size(0), -1)
+
+        value = self.value(x)
+        advantage = self.advantage(x)
+
+        return value + advantage - advantage.mean(dim=1, keepdim=True)
 
 # ==========================================
 # 3. REPLAY BUFFER
@@ -147,19 +173,19 @@ class Agent:
         self.batch_size = 64
         self.gamma = 0.99
         self.epsilon = 1.0
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.9995
+        self.epsilon_min = 0.05
+        self.epsilon_decay = 0.99997
         self.learning_rate = 1e-4
-        self.target_update_freq = 1000
-        self.memory_size = 120000
+        self.target_update_freq = 6000
+        self.memory_size = 300000
         self.start_training_step = 3000 
 
         # Models
         input_shape = env.observation_space.shape
         num_actions = env.action_space.n
         
-        self.policy_net = DQN(input_shape, num_actions).to(self.device)
-        self.target_net = DQN(input_shape, num_actions).to(self.device)
+        self.policy_net = DuelingDQN(input_shape, num_actions).to(self.device)
+        self.target_net = DuelingDQN(input_shape, num_actions).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
         
@@ -244,11 +270,19 @@ class Agent:
         self.steps = checkpoint.get('steps', self.steps)
         print(f"Loaded checkpoint! Resuming with Epsilon: {self.epsilon:.3f}")
 
-    def start(self, num_episodes=30000):
+    def start(self, num_episodes=60000):
         scores = []
+
+        max_alignment = 0.05
+        min_alignment = 0.01
+        anneal_episodes = 200_000
+
         for episode in range(num_episodes):
             state, info = self.env.reset()
             total_reward = 0
+
+            progress = min(episode / anneal_episodes, 1.0)
+            self.env.alignment_scale = max_alignment - progress * (max_alignment - min_alignment)
             
             while True:
                 action = self.select_action(state)
@@ -260,23 +294,22 @@ class Agent:
                 total_reward += reward
                 self.steps += 1
 
-                if self.steps > self.start_training_step and self.steps % 4 == 0:
-                    loss = self.learn()
+                if self.epsilon > self.epsilon_min:
+                    self.epsilon *= self.epsilon_decay
+
+                if self.steps > self.start_training_step and  self.steps % 2 == 0:
+                    _loss = self.learn()
 
                 if self.steps % self.target_update_freq == 0:
                     self.target_net.load_state_dict(self.policy_net.state_dict())
                 
                 if done:
                     break
-            
-            # Epsilon Decay
-            if self.epsilon > self.epsilon_min:
-                self.epsilon *= self.epsilon_decay
 
             scores.append(total_reward)
 
             # Log results
-            if episode % 250 == 0:
+            if episode % 100 == 0:
                 print(f"Episode {episode}, Score: {total_reward}, Epsilon: {self.epsilon:.2f}, Memory: {len(self.memory)}")
             
             # Save Checkpoint every 1000 episodes

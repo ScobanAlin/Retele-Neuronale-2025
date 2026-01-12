@@ -19,8 +19,8 @@ def watch_agent():
     agent = Agent(env)
     
     # 2. Load the trained model
-    if os.path.exists("flappy_checkpoint_old.pth"):
-        agent.load("flappy_checkpoint_old.pth")
+    if os.path.exists("flappy_checkpoint.pth"):
+        agent.load("flappy_checkpoint.pth")
         print("Model loaded successfully.")
     else:
         print("Error: No checkpoint found! Train the agent first.")
