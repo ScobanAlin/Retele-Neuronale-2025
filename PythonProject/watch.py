@@ -16,8 +16,8 @@ def watch_agent():
     agent = Agent(env)
     
     # Load Model
-    if os.path.exists("flappy_checkpoint_461.pth"):
-        agent.load("flappy_checkpoint_461.pth")
+    if os.path.exists("flappy_checkpoint_688.pth"):
+        agent.load("flappy_checkpoint_688.pth")
         print("Model loaded successfully.")
     else:
         print("Error: No checkpoint found! Train the agent first.")
@@ -35,39 +35,54 @@ def watch_agent():
 
         print(f"Starting Episode {ep+1}...")
         
+        # while True:
+        #     action = agent.select_action(state)
+            
+        #     next_state, reward, terminated, truncated, info = env.step(action)
+        #     done = terminated or truncated
+            
+        #     current_score = info.get('score', 0)
+        #     total_reward += reward
+
+        #     human_view = env.render() 
+            
+        #     if human_view is not None:
+        #         human_view = cv2.cvtColor(human_view, cv2.COLOR_RGB2BGR)
+                
+        #         text = f"Score: {current_score}"
+        #         cv2.putText(human_view, text, (10, 30), 
+        #                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+        #         cv2.imshow("Flappy Bird (Agent)", human_view)
+            
+        #     if cv2.waitKey(7) == ord('q'): 
+        #         print("Quitting...")
+        #         env.close()
+        #         cv2.destroyAllWindows()
+        #         return
+
+        #     state = next_state
+            
+        #     if done:
+        #         print(f"Episode {ep+1} Finished. Final Score: {current_score}. Reward: {total_reward}")
+        #         time.sleep(1) 
+        #         break
+                
+        # Inside your loop:
         while True:
             action = agent.select_action(state)
-            
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
-            
+
             current_score = info.get('score', 0)
             total_reward += reward
 
-            human_view = env.render() 
-            
-            if human_view is not None:
-                human_view = cv2.cvtColor(human_view, cv2.COLOR_RGB2BGR)
-                
-                text = f"Score: {current_score}"
-                cv2.putText(human_view, text, (10, 30), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                
-                cv2.imshow("Flappy Bird (Agent)", human_view)
-            
-            if cv2.waitKey(30) == ord('q'): 
-                print("Quitting...")
-                env.close()
-                cv2.destroyAllWindows()
-                return
-
             state = next_state
-            
+
             if done:
                 print(f"Episode {ep+1} Finished. Final Score: {current_score}. Reward: {total_reward}")
-                time.sleep(1) 
                 break
-                
+
     env.close()
     cv2.destroyAllWindows()
 

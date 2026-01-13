@@ -25,8 +25,7 @@ class FlappyBirdWrapper(gym.Wrapper):
         self.height = 84
         self.frame_stack_len = 4    
         self.frames = deque(maxlen=self.frame_stack_len)
-        self.skip = 2 
-        self.alignment_scale = 0.05
+        self.skip = 2
         
         self.observation_space = gym.spaces.Box(
             low=0, high=255,
@@ -238,7 +237,7 @@ class Agent:
             print("No checkpoint found. Starting from scratch.")
             return
 
-        checkpoint = torch.load(path)
+        checkpoint = torch.load(path, map_location=torch.device('cpu'))
         self.policy_net.load_state_dict(checkpoint['model_state'])
         self.target_net.load_state_dict(checkpoint['target_state'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state'])
@@ -246,7 +245,7 @@ class Agent:
         self.epsilon = checkpoint.get('epsilon', self.epsilon)
         
         self.steps = checkpoint.get('steps', self.steps)
-        print(f"Loaded checkpoint! Resuming with Epsilon: {self.epsilon:.3f}")
+        print(f"Loaded {path}! Resuming with Epsilon: {self.epsilon:.3f}")
 
     def start(self, num_episodes=60000):
         scores = []
