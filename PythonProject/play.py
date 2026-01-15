@@ -9,21 +9,17 @@ from utils.preprocess import preprocess_frame
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Env for DISPLAY
 env_human = gym.make("FlappyBird-v0", render_mode="human")
 
-# Env for PIXELS
 env_rgb = gym.make("FlappyBird-v0", render_mode="rgb_array")
 
 policy_net = DQN().to(DEVICE)
 policy_net.load_state_dict(torch.load("dqn_flappy.pth", map_location=DEVICE))
 policy_net.eval()
 
-# Reset both
 env_human.reset()
 env_rgb.reset()
 
-# Initial frame from rgb env
 frame = preprocess_frame(env_rgb.render())
 stacker = FrameStack(4)
 state = stacker.reset(frame)
@@ -36,13 +32,11 @@ while not done:
         state_t = torch.tensor(state).unsqueeze(0).to(DEVICE)
         action = policy_net(state_t).argmax(1).item()
 
-    # Step BOTH environments with same action
     _, reward, terminated, truncated, _ = env_human.step(action)
     env_rgb.step(action)
 
     done = terminated or truncated
 
-    # Get image from rgb env
     next_frame = preprocess_frame(env_rgb.render())
     state = stacker.step(next_frame)
 

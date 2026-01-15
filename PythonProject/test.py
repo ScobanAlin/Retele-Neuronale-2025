@@ -15,9 +15,7 @@ import random
 from collections import deque
 import matplotlib.pyplot as plt
 
-# ==========================================
-# 1. PREPROCESSING WRAPPERS
-# ==========================================
+# PREPROCESSING WRAPPERS
 class FlappyBirdWrapper(gym.Wrapper):
     def __init__(self, env):
         super(FlappyBirdWrapper, self).__init__(env)
@@ -75,9 +73,7 @@ class FlappyBirdWrapper(gym.Wrapper):
     def _get_stacked_obs(self):
         return np.stack(self.frames, axis=0)
 
-# ==========================================
-# 2. NEURAL NETWORK (CNN)
-# ==========================================
+# NEURAL NETWORK (CNN)
 class DuelingDQN(nn.Module):
     def __init__(self, input_shape, num_actions):
         super().__init__()
@@ -118,9 +114,7 @@ class DuelingDQN(nn.Module):
 
         return value + advantage - advantage.mean(dim=1, keepdim=True)
 
-# ==========================================
-# 3. REPLAY BUFFER
-# ==========================================
+# REPLAY BUFFER
 class ReplayBuffer:
     def __init__(self, capacity):
         self.buffer = deque(maxlen=capacity)
@@ -136,9 +130,7 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
-# ==========================================
-# 4. TRAINING AGENT
-# ==========================================
+# TRAINING AGENT
 class Agent:
     def __init__(self, env):
         self.env = env
@@ -146,7 +138,6 @@ class Agent:
         
         print(f"Training on: {self.device} (Model: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
 
-        # Hyperparameters
         self.batch_size = 64
         self.gamma = 0.99
         self.epsilon = 1.0
@@ -157,7 +148,6 @@ class Agent:
         self.memory_size = 400000
         self.start_training_step = 3000 
 
-        # Models
         input_shape = env.observation_space.shape
         num_actions = env.action_space.n
         
@@ -171,7 +161,6 @@ class Agent:
         self.steps = 0
 
     def select_action(self, state):
-        # Epsilon-Greedy Strategy
         if random.random() < self.epsilon:
             return self.env.action_space.sample()
         
@@ -184,7 +173,6 @@ class Agent:
         if len(self.memory) < self.start_training_step:
             return None
 
-        # Sample Batch
         states, actions, rewards, next_states, dones = self.memory.sample(self.batch_size)
 
         states = torch.tensor(np.array(states), dtype=torch.float32).to(self.device) / 255.0
@@ -193,34 +181,27 @@ class Agent:
         next_states = torch.tensor(np.array(next_states), dtype=torch.float32).to(self.device) / 255.0
         dones = torch.tensor(dones, dtype=torch.float32).unsqueeze(1).to(self.device)
 
-        # === DOUBLE DQN LOGIC (The Key Fix) ===
         with torch.no_grad():
-            # 1. Use Policy Net to SELECT the best action for the next state
             best_actions = self.policy_net(next_states).argmax(1).unsqueeze(1)
             
-            # 2. Use Target Net to EVALUATE that specific action
-            # This decoupling prevents the agent from making "optimistic" mistakes
+
             next_q_values = self.target_net(next_states).gather(1, best_actions)
             
             target_q = rewards + (1 - dones) * self.gamma * next_q_values
-        # ======================================
 
         current_q = self.policy_net(states).gather(1, actions)
         
-        # Using Huber Loss (SmoothL1) is good
         loss = nn.SmoothL1Loss()(current_q, target_q)
 
         self.optimizer.zero_grad()
         loss.backward()
         
-        # Optional: Clip gradients to prevent crashes in long runs
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 1.0)
         
         self.optimizer.step()
 
         return loss.item()
 
-    # --- FIXED SAVE/LOAD TO HANDLE EPSILON AND OPTIMIZER ---
     def save(self, path="flappy_checkpoint.pth"):
         checkpoint = {
             'model_state': self.policy_net.state_dict(),
@@ -280,43 +261,33 @@ class Agent:
             scores.append(total_reward)
             recent_scores.append(total_reward)
 
-            # Log results
             if episode % 100 == 0:
-                # Calculate the mean of whatever is in the recent buffer
                 avg_score = np.mean(recent_scores) if recent_scores else 0
                 print(f"Episode {episode}, Avg Score (Last 100): {avg_score:.2f}, Epsilon: {self.epsilon:.2f}, Memory: {len(self.memory)}")
                 
-            # Save Checkpoint every 1000 episodes
             if episode % 1000 == 0:
                 self.save()
 
         return scores
 
-# ==========================================
 # MAIN EXECUTION
-# ==========================================
 if __name__ == "__main__":
-    # Create the environment with RGB output
     print("Initializing Environment...")
     env = gym.make("FlappyBird-v0", render_mode="rgb_array", use_lidar=False)
     
-    # Apply our custom Pixel wrapper
     env = FlappyBirdWrapper(env)
     
     agent = Agent(env)
     
-    # Auto-resume logic
     if os.path.exists("flappy_checkpoint.pth"):
         agent.load("flappy_checkpoint.pth")
     else:
         print("Starting training from scratch...")
 
-    # Start training
     scores = agent.start()
     
     env.close()
     
-    # Plot results
     plt.plot(scores)
     plt.title("Flappy Bird Training Score")
     plt.xlabel("Episode")
